@@ -32,6 +32,7 @@
 // ****************************************************************************/
 
 using System;
+using System.IO;
 using System.CommandLine;
 using System.CommandLine.Invocation;
 using Aaru.CommonTypes;
@@ -57,7 +58,32 @@ namespace Aaru.Commands.Archive
             Handler = CommandHandler.Create(GetType().GetMethod(nameof(Invoke)));
         }
 
-        public static int Invoke(bool debug, bool verbose, string imagePath)
+        public static IArchive Detect(IFilter archiveFilter)
+        {
+            PluginBase plugins = GetPluginBase.Instance;
+
+            foreach(IArchive archivePlugin in plugins.Archives.Values)
+            {
+                try
+                {
+                    AaruConsole.DebugWriteLine("Archive detection", "Trying plugin {0}", archivePlugin.Name);
+
+                    using (Stream s = archiveFilter.GetDataForkStream())
+                    {
+                        if(archivePlugin.Identify(s))
+                            return archivePlugin;
+                    }
+                }
+                #pragma warning disable RECS0022 // A catch clause that catches System.Exception and has an empty body
+                catch
+                {
+                    // ignored
+                }
+            }
+
+            return null;
+        }
+        public static int Invoke(bool debug, bool verbose, string archivePath)
         {
             MainClass.PrintCopyright();
 
@@ -69,11 +95,68 @@ namespace Aaru.Commands.Archive
 
             Statistics.AddCommand("archive-info");
 
-            AaruConsole.DebugWriteLine("Analyze command", "--debug={0}", debug);
-            AaruConsole.DebugWriteLine("Analyze command", "--input={0}", imagePath);
-            AaruConsole.DebugWriteLine("Analyze command", "--verbose={0}", verbose);
+            AaruConsole.DebugWriteLine("Info command", "--debug={0}", debug);
+            AaruConsole.DebugWriteLine("Info command", "--input={0}", archivePath);
+            AaruConsole.DebugWriteLine("Info command", "--verbose={0}", verbose);
 
-            /* TODO: This is just a stub for now */
+            FiltersList filtersList = new FiltersList();
+            IFilter inputFilter = filtersList.GetFilter(archivePath);
+
+            if(inputFilter == null)
+            {
+                AaruConsole.ErrorWriteLine("Cannot open specified file.");
+
+                return (int)ErrorNumber.CannotOpenFile;
+            }
+
+            try
+            {
+                IArchive archive = Detect(inputFilter);
+
+                if(archive == null)
+                {
+                    AaruConsole.WriteLine("Archive not identified.");
+
+                    return (int)ErrorNumber.UnrecognizedFormat;
+                }
+
+                AaruConsole.WriteLine("Archive identified by {0} ({1}).", archive.Name, archive.Id);
+                AaruConsole.WriteLine();
+
+                try
+                {
+                    using (Stream s = inputFilter.GetDataForkStream())
+                    {
+                        archive.Open(s);
+                        if (!archive.IsOpened())
+                        {
+                            AaruConsole.WriteLine("Unable to open archive");
+                            AaruConsole.WriteLine("No error given");
+
+                            return (int)ErrorNumber.CannotOpenFormat;
+                        }
+
+                        // TODO: Print archive info
+                        
+                        archive.Close();
+                    }
+                }
+                catch(Exception ex)
+                {
+                    AaruConsole.ErrorWriteLine("Unable to open archive");
+                    AaruConsole.ErrorWriteLine("Error: {0}", ex.Message);
+                    AaruConsole.DebugWriteLine("Archive-info command", "Stack trace: {0}", ex.StackTrace);
+
+                    return (int)ErrorNumber.CannotOpenFormat;
+                }
+            }
+            catch(Exception ex)
+            {
+                AaruConsole.ErrorWriteLine($"Error reading file: {ex.Message}");
+                AaruConsole.DebugWriteLine("Archive-info command", ex.StackTrace);
+
+                return (int)ErrorNumber.UnexpectedException;
+            }
 
             return (int)ErrorNumber.NoError;
         }
